@@ -1,5 +1,5 @@
 ## Sample OMR Sheet
-![OMR Output](sample_omrs/omr_sheet_1.png) 
+<img src="sample_omrs/omr_sheet_1.png" width="400" height="300">
 
 ## Output Video
 You can watch the working demo of the project her.
