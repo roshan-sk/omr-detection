@@ -3,7 +3,7 @@ from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
-from models import OMRSheet, OMRAnswer
+from models import OMRSheet
 
 
 def auto_fit_columns(ws):
@@ -36,14 +36,8 @@ def build_excel(sheet_ids=None):
     if not sheets:
         return None
 
-    first_answers = (
-        OMRAnswer.query
-        .filter_by(sheet_id=sheets[0].id)
-        .order_by(OMRAnswer.question_no)
-        .all()
-    )
-
-    total_questions = len(first_answers)
+    first_sheet_answers = sheets[0].answers or {}
+    total_questions = len(first_sheet_answers)
 
     headers = [
         "File Name",
@@ -80,15 +74,17 @@ def build_excel(sheet_ids=None):
             sheet.admission_number
         ]
 
-        answers = (
-            OMRAnswer.query
-            .filter_by(sheet_id=sheet.id)
-            .order_by(OMRAnswer.question_no)
-            .all()
-        )
+        answers_json = sheet.answers or {}
 
-        for ans in answers:
-            row.append(ans.selected_option)
+        for i in range(1, total_questions + 1):
+            q_no = f"Q{str(i).zfill(3)}"
+
+            ans_data = answers_json.get(q_no)
+
+            if ans_data:
+                row.append(ans_data.get("selected"))
+            else:
+                row.append("")
 
         row += [
             sheet.correct_answers,

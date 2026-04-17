@@ -1,31 +1,127 @@
 import os
 import cv2
+import zipfile
 from flask import (
     Flask,
     render_template,
     request,
-    send_from_directory,
     send_file,
     session,
-    redirect,
-    url_for,
-    flash
+    redirect
 )
-from omr_detection import process_omr
 
-from models import db, OMRSheet, OMRAnswer, AnswerKey
+from omr_detection import process_omr
+from models import db, OMRSheet, AnswerKey
 from helpers import build_excel
+import uuid
+import time
+from flask import Flask
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dotenv import load_dotenv
+
+
+load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = "omr-secret-key"
 
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///omr.db"
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+db_url = os.getenv("DATABASE_URL")
+
+if not db_url:
+    raise ValueError("DATABASE_URL is not set")
+
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db.init_app(app)
 
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+
+def process_single_file_worker(path, original_name, answer_key):
+    try:
+        img = cv2.imread(path)
+        if img is None:
+            raise Exception("Invalid image")
+
+        data = process_omr(img)
+
+        roll_number = data["roll_number"]
+
+        unique_id = str(uuid.uuid4())[:8]
+        name_only, ext = os.path.splitext(original_name)
+        new_filename = f"{roll_number}_{name_only}_{unique_id}{ext}"
+        new_path = os.path.join("uploads", new_filename)
+
+        os.rename(path, new_path)
+
+        answers_json = {}
+        final_answer = []
+
+        for i, ans in enumerate(data["answers"]):
+            q_no = f"Q{str(i+1).zfill(3)}"
+
+            if ans == "-":
+                selected = "Empty"
+            elif ans == "MULTI":
+                selected = "Multiple"
+            else:
+                selected = ans
+
+            correct = answer_key.get(q_no)
+            is_correct = selected == correct
+
+            answers_json[q_no] = {
+                "selected": selected,
+                "is_correct": is_correct
+            }
+
+            final_answer.append({
+                "value": selected,
+                "is_correct": is_correct
+            })
+
+        correct_count = sum(1 for a in final_answer if a["is_correct"])
+        total = len(final_answer)
+        wrong = total - correct_count
+        percentage = (correct_count / total * 100) if total else 0
+
+        return {
+            "sheet_data": {
+                "roll_number": data["roll_number"],
+                "original_file_name": original_name,
+                "result_file": new_filename,
+                "name": data["name"],
+                "class_name": data["class_name"],
+                "section": data["section"],
+                "stream": data["stream"],
+                "set_number": data["set_number"],
+                "subject_code": data["subject_code"],
+                "admission_number": data["admission_number"],
+                "total_questions": total,
+                "correct_answers": correct_count,
+                "wrong_answers": wrong,
+                "percentage": percentage,
+                "answers": answers_json
+            },
+            "result": {
+                "name": data["name"],
+                "roll_number": data["roll_number"],
+                "class": data["class_name"],
+                "section": data["section"],
+                "stream": data["stream"],
+                "answers": final_answer,
+                "percentage": round(percentage, 2)
+            },
+            "key": new_filename
+        }
+
+    except Exception as e:
+        return {
+            "error": f"{original_name}: {str(e)}"
+        }
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -40,152 +136,64 @@ def index():
     total_questions = max(150, len(answer_key))
 
     if request.method == "POST":
+        start_time = time.time()
+
         files = request.files.getlist("files")
         results = {}
-        latest_sheet_ids = []
+        all_sheets = []
+        tasks = []
+
+        file_paths = []
 
         for file in files:
-            if file.filename == "":
+            if not file.filename:
                 continue
 
-            try:
-                original_name = file.filename
-                temp_path = os.path.join(UPLOAD_FOLDER, "temp_" + original_name)
+            if file.filename.endswith(".zip"):
+                zip_path = os.path.join(UPLOAD_FOLDER, file.filename)
+                file.save(zip_path)
+
+                extract_folder = os.path.join(UPLOAD_FOLDER, file.filename + "_extracted")
+                os.makedirs(extract_folder, exist_ok=True)
+
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(extract_folder)
+
+                for root, _, extracted_files in os.walk(extract_folder):
+                    for fname in extracted_files:
+                        file_paths.append((os.path.join(root, fname), fname))
+
+            else:
+                temp_path = os.path.join(UPLOAD_FOLDER, "temp_" + file.filename)
                 file.save(temp_path)
+                file_paths.append((temp_path, file.filename))
 
-                img = cv2.imread(temp_path)
-                if img is None:
-                    raise Exception("Invalid image")
+        with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+            futures = [
+                executor.submit(process_single_file_worker, path, name, answer_key)
+                for path, name in file_paths
+            ]
 
-                data = process_omr(img)
+            for future in as_completed(futures):
+                result = future.result()
 
-                name = data["name"]
-                class_name = data["class_name"]
-                section = data["section"]
-                roll_number = data["roll_number"]
-                stream = data["stream"]
-                set_number = data["set_number"]
-                subject_code = data["subject_code"]
-                admission_number = data["admission_number"]
-                answers = data["answers"]
-                
-                final_answers = []
+                if "error" in result:
+                    results[result["error"]] = result["error"]
+                    continue
 
-                for i, ans in enumerate(data["answers"]):
-                    q_no = f"Q{str(i+1).zfill(3)}"
+                sheet = OMRSheet(**result["sheet_data"])
+                all_sheets.append(sheet)
 
-                    if ans == "-":
-                        selected = "Empty"
-                    elif ans == "MULTI":
-                        selected = "Multiple"
-                    else:
-                        selected = ans
+                results[result["key"]] = result["result"]
 
-                    correct = answer_key.get(q_no)
-                    is_correct = selected == correct
+        # ✅ Single DB commit
+        db.session.add_all(all_sheets)
+        db.session.commit()
 
-                    final_answers.append({
-                        "value": selected,
-                        "is_correct": is_correct
-                    })
-                
-                name_only, ext = os.path.splitext(original_name)
-
-                new_filename = f"{roll_number}_{name_only}{ext}"
-                new_path = os.path.join(UPLOAD_FOLDER, new_filename)
-
-                if os.path.exists(new_path):
-                    os.remove(new_path)
-
-                os.rename(temp_path, new_path)
-
-
-                sheet = OMRSheet.query.filter_by(
-                    roll_number=roll_number
-                ).first()
-
-                if not sheet:
-                    sheet = OMRSheet(roll_number=roll_number)
-                    db.session.add(sheet)
-                    db.session.flush()
-                else:
-                    OMRAnswer.query.filter_by(sheet_id=sheet.id).delete()
-
-                final_answer = []
-
-                for i, ans in enumerate(answers):
-                    q_no = f"Q{str(i+1).zfill(3)}"
-
-                    if ans == "-":
-                        selected = "Empty"
-                    elif ans == "MULTI":
-                        selected = "Multiple"
-                    else:
-                        selected = ans
-
-                    correct = answer_key.get(q_no)
-                    is_correct = selected == correct
-
-                    db.session.add(
-                        OMRAnswer(
-                            question_no=q_no,
-                            selected_option=selected,
-                            is_correct=is_correct,
-                            sheet_id=sheet.id
-                        )
-                    )
-
-                    final_answer.append({
-                        "value": selected,
-                        "is_correct": is_correct
-                    })
-
-                correct_count = sum(1 for a in final_answer if a["is_correct"])
-                total = len(final_answer)
-                wrong = total - correct_count
-                percentage = (correct_count / total * 100) if total else 0
-
-                sheet.original_file_name = original_name
-                sheet.result_file = new_filename
-
-                sheet.name = name
-                sheet.class_name = class_name
-                sheet.section = section
-                sheet.stream = stream
-
-                sheet.set_number = set_number
-                sheet.subject_code = subject_code
-                sheet.admission_number = admission_number
-
-                sheet.total_questions = total
-                sheet.correct_answers = correct_count
-                sheet.wrong_answers = wrong
-                sheet.percentage = percentage
-
-                db.session.commit()
-
-                results[new_filename] = {
-                    "name": name,
-                    "roll_number": roll_number,
-                    "class": class_name,
-                    "section": section,
-                    "stream": stream,
-                    "answers": final_answers,
-                    "percentage": round((sum(a["is_correct"] for a in final_answers) / len(final_answers) * 100) if final_answers else 0, 2)
-                }
-
-                latest_sheet_ids.append(sheet.id)
-
-            except Exception as e:
-                results[file.filename] = f"Error: {str(e)}"
-
+        latest_sheet_ids = [s.id for s in all_sheets]
         session["latest_sheet_ids"] = latest_sheet_ids
-        
-    answer_key = {
-        ak.question_no: ak.correct_option
-        for ak in AnswerKey.query.all()
-    }
 
+        print("Execution time:", time.time() - start_time)
 
     return render_template(
         "index.html",
@@ -218,7 +226,6 @@ def save_answer_key():
                 )
 
     db.session.commit()
-
     return redirect("/")
 
 
@@ -242,6 +249,7 @@ def export_latest():
         download_name=filename,
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
     
 
 if __name__ == "__main__":

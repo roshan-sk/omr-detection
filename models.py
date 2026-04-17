@@ -9,10 +9,10 @@ class OMRSheet(db.Model):
     id = db.Column(db.Integer, primary_key=True)
 
     original_file_name = db.Column(db.String(200))
-    result_file = db.Column(db.String(200), unique=True)
+    result_file = db.Column(db.String(200))
     
     name = db.Column(db.String(40), index=True)
-    roll_number = db.Column(db.String(50), index=True, unique=True)
+    roll_number = db.Column(db.String(50), index=True)
     class_name = db.Column(db.String(10))
     section = db.Column(db.String(10))
     stream = db.Column(db.String(20))
@@ -31,34 +31,7 @@ class OMRSheet(db.Model):
         server_default=db.func.current_timestamp()
     )
 
-    answers = db.relationship(
-        'OMRAnswer',
-        backref='sheet',
-        cascade="all, delete-orphan",
-        lazy=True
-    )
-
-
-
-class OMRAnswer(db.Model):
-    __tablename__ = 'omr_answer'
-
-    id = db.Column(db.Integer, primary_key=True)
-
-    question_no = db.Column(db.String(10), nullable=False)
-    selected_option = db.Column(db.String(10))
-    is_correct = db.Column(db.Boolean)
-    
-    created_at = db.Column(
-        db.DateTime,
-        server_default=db.func.current_timestamp()
-    )
-
-    sheet_id = db.Column(
-        db.Integer,
-        db.ForeignKey('omr_sheet.id', ondelete="CASCADE"),
-        nullable=False
-    )
+    answers = db.Column(db.JSON)
 
 
 

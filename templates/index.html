@@ -216,12 +216,15 @@
         <div class="card">
             <form method="POST" enctype="multipart/form-data">
                 <div class="upload-box">
-                    <input class="file" type="file" name="files" multiple>
+                    <input class="file" type="file" name="files" multiple accept=".jpg,.jpeg,.png,.zip">
+                    <p style="margin-top:10px;font-size:14px;color:#cbd5f5;justify-content: center;">
+                        You can upload multiple images OR a ZIP file of OMR sheets.
+                    </p>
+                </div>
+                <div class="submit-btn">
+                    <button class="btn" id="submitBtn">Submit</button>
                 </div>
                 <br>
-                <div class="submit-btn">
-                    <button class="btn">Submit</button>
-                </div>
             </form>
         </div>
 
@@ -407,6 +410,16 @@
 
             btn.classList.add("active");
         }
+        document.querySelector("form").addEventListener("submit", function () {
+            const btn = document.getElementById("submitBtn");
+
+            btn.disabled = true;
+
+            btn.innerText = "Processing...";
+
+            btn.style.opacity = "0.6";
+            btn.style.cursor = "not-allowed";
+        });
 
     </script>
 
