@@ -32,6 +32,7 @@ class OMRSheet(db.Model):
     )
 
     answers = db.Column(db.JSON)
+    batch_id = db.Column(db.String(50))
 
 
 

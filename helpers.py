@@ -31,7 +31,7 @@ def build_excel(sheet_ids=None):
     if sheet_ids:
         query = query.filter(OMRSheet.id.in_(sheet_ids))
 
-    sheets = query.order_by(OMRSheet.id.desc()).all()
+    sheets = query.order_by(OMRSheet.percentage.desc()).all()
 
     if not sheets:
         return None
@@ -40,6 +40,7 @@ def build_excel(sheet_ids=None):
     total_questions = len(first_sheet_answers)
 
     headers = [
+        "Sl.No",
         "File Name",
         "Name",
         "Roll Number",
@@ -50,6 +51,8 @@ def build_excel(sheet_ids=None):
         "Subject Code",
         "Admission No"
     ]
+    
+    sl_no = 1
 
     for i in range(1, total_questions + 1):
         headers.append(f"Q{str(i).zfill(3)}")
@@ -63,6 +66,7 @@ def build_excel(sheet_ids=None):
 
     for sheet in sheets:
         row = [
+            sl_no,
             sheet.result_file,
             sheet.name,
             sheet.roll_number,
@@ -93,6 +97,7 @@ def build_excel(sheet_ids=None):
         ]
 
         ws.append(row)
+        sl_no+=1
 
     auto_fit_columns(ws)
 

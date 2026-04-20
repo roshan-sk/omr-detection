@@ -40,7 +40,7 @@ UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
-def process_single_file_worker(path, original_name, answer_key):
+def process_single_file_worker(path, original_name, answer_key, batch_id):
     try:
         img = cv2.imread(path)
         if img is None:
@@ -55,7 +55,7 @@ def process_single_file_worker(path, original_name, answer_key):
         new_filename = f"{roll_number}_{name_only}_{unique_id}{ext}"
         new_path = os.path.join("uploads", new_filename)
 
-        os.rename(path, new_path)
+        # os.rename(path, new_path)
 
         answers_json = {}
         final_answer = []
@@ -104,7 +104,8 @@ def process_single_file_worker(path, original_name, answer_key):
                 "correct_answers": correct_count,
                 "wrong_answers": wrong,
                 "percentage": percentage,
-                "answers": answers_json
+                "answers": answers_json,
+                "batch_id": batch_id
             },
             "result": {
                 "name": data["name"],
@@ -144,6 +145,8 @@ def index():
         tasks = []
 
         file_paths = []
+        batch_id = str(uuid.uuid4())
+
 
         for file in files:
             if not file.filename:
@@ -157,7 +160,9 @@ def index():
                 os.makedirs(extract_folder, exist_ok=True)
 
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    start = time.time()
                     zip_ref.extractall(extract_folder)
+                    print("Zip extract time:", time.time() - start)
 
                 for root, _, extracted_files in os.walk(extract_folder):
                     for fname in extracted_files:
@@ -168,9 +173,9 @@ def index():
                 file.save(temp_path)
                 file_paths.append((temp_path, file.filename))
 
-        with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+        with ProcessPoolExecutor(max_workers = max(2, os.cpu_count() - 1)) as executor:
             futures = [
-                executor.submit(process_single_file_worker, path, name, answer_key)
+                executor.submit(process_single_file_worker, path, name, answer_key, batch_id)
                 for path, name in file_paths
             ]
 
@@ -190,8 +195,7 @@ def index():
         db.session.add_all(all_sheets)
         db.session.commit()
 
-        latest_sheet_ids = [s.id for s in all_sheets]
-        session["latest_sheet_ids"] = latest_sheet_ids
+        session["latest_batch_id"] = batch_id
 
         print("Execution time:", time.time() - start_time)
 
@@ -231,10 +235,17 @@ def save_answer_key():
 
 @app.route("/api/export_latest")
 def export_latest():
-    ids = session.get("latest_sheet_ids", [])
+    batch_id = session.get("latest_batch_id")
 
-    if not ids:
+    if not batch_id:
         return {"message": "No recent data"}, 404
+
+    sheets = OMRSheet.query.filter_by(batch_id=batch_id).all()
+
+    if not sheets:
+        return {"message": "No records"}, 404
+
+    ids = [s.id for s in sheets]
 
     data = build_excel(sheet_ids=ids)
 
