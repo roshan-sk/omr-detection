@@ -1,6 +1,11 @@
 import os
 import cv2
 import zipfile
+import uuid
+import time
+import numpy as np
+import io
+
 from flask import (
     Flask,
     render_template,
@@ -10,24 +15,22 @@ from flask import (
     redirect
 )
 
-from omr_detection import process_omr
-from models import db, OMRSheet, AnswerKey
-from helpers import build_excel
-import uuid
-import time
-from flask import Flask
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dotenv import load_dotenv
 
+from omr_detection import process_omr
+from models import db, OMRSheet, AnswerKey
+from helpers import build_excel
 
+# ========================
+# INIT
+# ========================
 load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = "omr-secret-key"
 
-
 db_url = os.getenv("DATABASE_URL")
-
 if not db_url:
     raise ValueError("DATABASE_URL is not set")
 
@@ -40,12 +43,22 @@ UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
-def process_single_file_worker(path, original_name, answer_key, batch_id):
+# ========================
+# WORKER FUNCTION
+# ========================
+def process_single_file_worker(file_data, original_name, answer_key, batch_id, is_memory=False):
     try:
-        img = cv2.imread(path)
+        # ✅ Load image (memory or disk)
+        if is_memory:
+            nparr = np.frombuffer(file_data, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        else:
+            img = cv2.imread(file_data)
+
         if img is None:
             raise Exception("Invalid image")
 
+        img = cv2.resize(img, (800, 1200))
         data = process_omr(img)
 
         roll_number = data["roll_number"]
@@ -53,9 +66,6 @@ def process_single_file_worker(path, original_name, answer_key, batch_id):
         unique_id = str(uuid.uuid4())[:8]
         name_only, ext = os.path.splitext(original_name)
         new_filename = f"{roll_number}_{name_only}_{unique_id}{ext}"
-        new_path = os.path.join("uploads", new_filename)
-
-        # os.rename(path, new_path)
 
         answers_json = {}
         final_answer = []
@@ -120,9 +130,7 @@ def process_single_file_worker(path, original_name, answer_key, batch_id):
         }
 
     except Exception as e:
-        return {
-            "error": f"{original_name}: {str(e)}"
-        }
+        return {"error": f"{original_name}: {str(e)}"}
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -137,67 +145,117 @@ def index():
     total_questions = max(150, len(answer_key))
 
     if request.method == "POST":
-        start_time = time.time()
+        total_start = time.time()
 
         files = request.files.getlist("files")
         results = {}
         all_sheets = []
-        tasks = []
 
-        file_paths = []
         batch_id = str(uuid.uuid4())
 
+        read_start = time.time()
+        futures = []
 
-        for file in files:
-            if not file.filename:
-                continue
+        with ProcessPoolExecutor(max_workers=max(2, os.cpu_count() - 2)) as executor:
 
-            if file.filename.endswith(".zip"):
-                zip_path = os.path.join(UPLOAD_FOLDER, file.filename)
-                file.save(zip_path)
-
-                extract_folder = os.path.join(UPLOAD_FOLDER, file.filename + "_extracted")
-                os.makedirs(extract_folder, exist_ok=True)
-
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    start = time.time()
-                    zip_ref.extractall(extract_folder)
-                    print("Zip extract time:", time.time() - start)
-
-                for root, _, extracted_files in os.walk(extract_folder):
-                    for fname in extracted_files:
-                        file_paths.append((os.path.join(root, fname), fname))
-
-            else:
-                temp_path = os.path.join(UPLOAD_FOLDER, "temp_" + file.filename)
-                file.save(temp_path)
-                file_paths.append((temp_path, file.filename))
-
-        with ProcessPoolExecutor(max_workers = max(2, os.cpu_count() - 1)) as executor:
-            futures = [
-                executor.submit(process_single_file_worker, path, name, answer_key, batch_id)
-                for path, name in file_paths
-            ]
-
-            for future in as_completed(futures):
-                result = future.result()
-
-                if "error" in result:
-                    results[result["error"]] = result["error"]
+            for file in files:
+                if not file.filename:
                     continue
 
-                sheet = OMRSheet(**result["sheet_data"])
-                all_sheets.append(sheet)
+                # ========================
+                # ZIP FILE
+                # ========================
+                if file.filename.endswith(".zip"):
 
-                results[result["key"]] = result["result"]
+                    zip_open_start = time.time()
 
-        # ✅ Single DB commit
+                    zip_ref = zipfile.ZipFile(file.stream, 'r')
+
+                    print("ZIP opened (stream):", time.time() - zip_open_start)
+
+                    count = 0
+
+                    for file_info in zip_ref.infolist():
+
+                        if not file_info.filename.lower().endswith((".jpg", ".png", ".jpeg")):
+                            continue
+
+                        with zip_ref.open(file_info) as f:
+                            file_bytes = f.read()
+
+                        if count % 500 == 0:
+                            print(f"[ZIP STREAM] {count} files")
+
+                        futures.append(
+                            executor.submit(
+                                process_single_file_worker,
+                                file_bytes,
+                                file_info.filename,
+                                answer_key,
+                                batch_id,
+                                True
+                            )
+                        )
+
+                        count += 1
+
+                # ========================
+                # NORMAL FILE
+                # ========================
+                else:
+                    temp_path = os.path.join(UPLOAD_FOLDER, "temp_" + file.filename)
+                    file.save(temp_path)
+
+                    futures.append(
+                        executor.submit(
+                            process_single_file_worker,
+                            temp_path,
+                            file.filename,
+                            answer_key,
+                            batch_id,
+                            False
+                        )
+                    )
+
+        print("==============", time.time(),"All tasks submitted in:", time.time() - read_start)
+
+        # ========================
+        # PROCESS RESULTS
+        # ========================
+        process_start = time.time()
+
+        for i, future in enumerate(as_completed(futures)):
+            result = future.result()
+
+            if "error" in result:
+                results[result["error"]] = result["error"]
+                continue
+
+            sheet = OMRSheet(**result["sheet_data"])
+            all_sheets.append(sheet)
+
+            results[result["key"]] = result["result"]
+
+            # DEBUG every 500
+            if i % 500 == 0:
+                print(f"[PROCESS] Completed {i} files")
+
+        print("Processing time:", time.time() - process_start)
+
+        # ========================
+        # DB SAVE
+        # ========================
+        db_start = time.time()
+
         db.session.add_all(all_sheets)
         db.session.commit()
 
+        print("DB save time:", time.time() - db_start)
+
         session["latest_batch_id"] = batch_id
 
-        print("Execution time:", time.time() - start_time)
+        print("Total files:", len(all_sheets))
+        print("TOTAL EXECUTION TIME:", time.time() - total_start)
 
     return render_template(
         "index.html",
@@ -207,6 +265,9 @@ def index():
     )
 
 
+# ========================
+# SAVE ANSWER KEY
+# ========================
 @app.route("/save_answer_key", methods=["POST"])
 def save_answer_key():
     total = int(request.form.get("total_questions", 100))
@@ -233,6 +294,9 @@ def save_answer_key():
     return redirect("/")
 
 
+# ========================
+# EXPORT API
+# ========================
 @app.route("/api/export_latest")
 def export_latest():
     batch_id = session.get("latest_batch_id")
@@ -261,8 +325,10 @@ def export_latest():
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-    
 
+# ========================
+# RUN
+# ========================
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()

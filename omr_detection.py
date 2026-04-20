@@ -52,15 +52,24 @@ def preprocess_and_warp(image):
 
     return warp_image(image, contour)
 
+def get_thresh(img):
+    if len(img.shape) == 2:  # already gray
+        gray = img
+    else:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-def threshold_column(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    return cv2.adaptiveThreshold(
+    thresh = cv2.adaptiveThreshold(
         gray, 255,
         cv2.ADAPTIVE_THRESH_MEAN_C,
         cv2.THRESH_BINARY_INV,
         21, 5
     )
+    return gray, thresh
+
+
+def threshold_column(img):
+    _, thresh = get_thresh(img)
+    return thresh
 
 
 def get_row_centers(rows):
@@ -68,13 +77,14 @@ def get_row_centers(rows):
 
 
 def detect_rows(img, min_h=8, th_start=0.17, th_end=0.2):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    thresh = cv2.adaptiveThreshold(
-        gray, 255,
-        cv2.ADAPTIVE_THRESH_MEAN_C,
-        cv2.THRESH_BINARY_INV,
-        21, 5
-    )
+    # gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # thresh = cv2.adaptiveThreshold(
+    #     gray, 255,
+    #     cv2.ADAPTIVE_THRESH_MEAN_C,
+    #     cv2.THRESH_BINARY_INV,
+    #     21, 5
+    # )
+    _, thresh = get_thresh(img)
 
     row_sum = np.sum(thresh, axis=1)
     if np.max(row_sum) == 0:
