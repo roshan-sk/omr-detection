@@ -92,13 +92,7 @@
             background: #0b1220;
         }
 
-        .sticky-left-0 {
-            position: sticky;
-            left: 0;
-            background: #0b1220;
-        }
-
-        .sticky-left-1 {
+        .sticky-left {
             z-index: 5;
         }
 
@@ -109,28 +103,28 @@
             z-index: 2;
         }
 
-        .sticky-left-1 {
+        .sticky-left {
             position: sticky;
-            left: 80px;
+            left: 0;
             background: #0b1220;
             z-index: 5;
         }
 
         .sticky-left-2 {
             position: sticky;
-            left: 200px;
+            left: 120px;
             background: #0b1220;
         }
 
         .sticky-left-3 {
             position: sticky;
-            left: 320px;
+            left: 220px;
             background: #0b1220;
         }
 
         .sticky-left-4 {
             position: sticky;
-            left: 440px;
+            left: 320px;
             background: #0b1220;
         }
 
@@ -248,8 +242,7 @@
                 <table>
                     <thead>
                         <tr>
-                            <th class="sticky-left-0">Sl. No</th>
-                            <th class="sticky-left-1">Name</th>
+                            <th class="sticky-left">Name</th>
                             <th class="sticky-left-2">Roll</th>
                             <th class="sticky-left-3">Class</th>
                             <th class="sticky-left-4">Percentage%</th>
@@ -263,8 +256,7 @@
                     <tbody>
                         {% for file, data in results.items() %}
                         <tr>
-                            <td class="sticky-left-0">{{ loop.index }}</td>
-                            <td class="sticky-left-1">{{ data.name }}</td>
+                            <td class="sticky-left">{{ data.name }}</td>
                             <td class="sticky-left-2">{{ data.roll_number }}</td>
                             <td class="sticky-left-3">{{ data.class }}</td>
                             <td class="sticky-left-4">{{ data.percentage or 0 }}</td>

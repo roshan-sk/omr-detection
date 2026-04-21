@@ -5,6 +5,9 @@ import uuid
 import time
 import numpy as np
 import io
+import threading
+from queue import Queue
+from flask import jsonify
 
 from flask import (
     Flask,
@@ -27,6 +30,7 @@ from helpers import build_excel
 # ========================
 load_dotenv()
 
+
 app = Flask(__name__)
 app.secret_key = "omr-secret-key"
 
@@ -42,10 +46,9 @@ db.init_app(app)
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+progress_store = {}
 
-# ========================
-# WORKER FUNCTION
-# ========================
+
 def process_single_file_worker(file_data, original_name, answer_key, batch_id, is_memory=False):
     try:
         # ✅ Load image (memory or disk)
@@ -146,63 +149,95 @@ def index():
 
     if request.method == "POST":
         total_start = time.time()
+        print("1st time====", total_start)
 
         files = request.files.getlist("files")
         results = {}
         all_sheets = []
-
         batch_id = str(uuid.uuid4())
+        progress_store[batch_id] = {
+            "total": 0,
+            "processed": 0,
+            "status": "Starting"
+        }
 
-        read_start = time.time()
-        futures = []
+        queue = Queue(maxsize=50)  # control memory
 
-        with ProcessPoolExecutor(max_workers=max(2, os.cpu_count() - 2)) as executor:
+        def zip_reader(zip_ref, queue):
+            count = 0
+            read_start = time.time()
+            print("2nd time read time=======",read_start)
+
+            for file_info in zip_ref.infolist():
+                if not file_info.filename.lower().endswith((".jpg", ".png", ".jpeg")):
+                    continue
+                progress_store[batch_id]["total"] += 1
+                progress_store[batch_id]["status"] = "Reading ZIP"
+
+                with zip_ref.open(file_info) as f:
+                    file_bytes = f.read()
+
+                queue.put((file_bytes, file_info.filename))
+
+                if count % 500 == 0:
+                    print("3rd time========", time.time()-read_start)
+                    print(f"[QUEUE LOAD] {count}")
+
+                count += 1
+
+            print("ZIP reading time:", time.time() - read_start)
+
+            queue.put(None)  # signal end
+
+        with ProcessPoolExecutor(max_workers=max(2, os.cpu_count() - 3)) as executor:
+
+            futures = []
 
             for file in files:
                 if not file.filename:
                     continue
 
-                # ========================
-                # ZIP FILE
-                # ========================
                 if file.filename.endswith(".zip"):
 
                     zip_open_start = time.time()
-
                     zip_ref = zipfile.ZipFile(file.stream, 'r')
+                    print("ZIP opened:", time.time() - zip_open_start)
 
-                    print("ZIP opened (stream):", time.time() - zip_open_start)
+                    # start producer thread
+                    t = threading.Thread(target=zip_reader, args=(zip_ref, queue))
+                    t.start()
 
-                    count = 0
+                    submit_count = 0
+                    submit_start = time.time()
 
-                    for file_info in zip_ref.infolist():
+                    while True:
+                        item = queue.get()
 
-                        if not file_info.filename.lower().endswith((".jpg", ".png", ".jpeg")):
-                            continue
+                        if item is None:
+                            break
 
-                        with zip_ref.open(file_info) as f:
-                            file_bytes = f.read()
-
-                        if count % 500 == 0:
-                            print(f"[ZIP STREAM] {count} files")
+                        file_bytes, name = item
 
                         futures.append(
                             executor.submit(
                                 process_single_file_worker,
                                 file_bytes,
-                                file_info.filename,
+                                name,
                                 answer_key,
                                 batch_id,
                                 True
                             )
                         )
 
-                        count += 1
+                        if submit_count % 500 == 0:
+                            print(f"[SUBMIT] {submit_count}")
 
-                # ========================
-                # NORMAL FILE
-                # ========================
+                        submit_count += 1
+
+                    print("Task submission time:", time.time() - submit_start)
+
                 else:
+                    # normal file
                     temp_path = os.path.join(UPLOAD_FOLDER, "temp_" + file.filename)
                     file.save(temp_path)
 
@@ -217,39 +252,34 @@ def index():
                         )
                     )
 
-        print("==============", time.time(),"All tasks submitted in:", time.time() - read_start)
+            process_start = time.time()
 
-        # ========================
-        # PROCESS RESULTS
-        # ========================
-        process_start = time.time()
+            for i, future in enumerate(as_completed(futures)):
+                result = future.result()
 
-        for i, future in enumerate(as_completed(futures)):
-            result = future.result()
+                if "error" in result:
+                    results[result["error"]] = result["error"]
+                    continue
 
-            if "error" in result:
-                results[result["error"]] = result["error"]
-                continue
+                sheet = OMRSheet(**result["sheet_data"])
+                all_sheets.append(sheet)
 
-            sheet = OMRSheet(**result["sheet_data"])
-            all_sheets.append(sheet)
+                results[result["key"]] = result["result"]
 
-            results[result["key"]] = result["result"]
+                if i % 500 == 0:
+                    print(f"[PROCESS DONE] {i}")
+                progress_store[batch_id]["processed"] = i + 1
+                progress_store[batch_id]["status"] = "Processing"
 
-            # DEBUG every 500
-            if i % 500 == 0:
-                print(f"[PROCESS] Completed {i} files")
+            print("Processing time:", time.time() - process_start)
 
-        print("Processing time:", time.time() - process_start)
-
-        # ========================
-        # DB SAVE
-        # ========================
         db_start = time.time()
 
         db.session.add_all(all_sheets)
         db.session.commit()
 
+        progress_store[batch_id]["status"] = "Completed"
+        
         print("DB save time:", time.time() - db_start)
 
         session["latest_batch_id"] = batch_id
@@ -265,9 +295,6 @@ def index():
     )
 
 
-# ========================
-# SAVE ANSWER KEY
-# ========================
 @app.route("/save_answer_key", methods=["POST"])
 def save_answer_key():
     total = int(request.form.get("total_questions", 100))
@@ -294,9 +321,6 @@ def save_answer_key():
     return redirect("/")
 
 
-# ========================
-# EXPORT API
-# ========================
 @app.route("/api/export_latest")
 def export_latest():
     batch_id = session.get("latest_batch_id")
@@ -326,9 +350,6 @@ def export_latest():
     )
 
 
-# ========================
-# RUN
-# ========================
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()
