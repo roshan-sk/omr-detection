@@ -25,9 +25,7 @@ from omr_detection import process_omr
 from models import db, OMRSheet, AnswerKey
 from helpers import build_excel
 
-# ========================
-# INIT
-# ========================
+
 load_dotenv()
 
 
@@ -51,7 +49,6 @@ progress_store = {}
 
 def process_single_file_worker(file_data, original_name, answer_key, batch_id, is_memory=False):
     try:
-        # ✅ Load image (memory or disk)
         if is_memory:
             nparr = np.frombuffer(file_data, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -161,7 +158,7 @@ def index():
             "status": "Starting"
         }
 
-        queue = Queue(maxsize=50)  # control memory
+        queue = Queue(maxsize=50)
 
         def zip_reader(zip_ref, queue):
             count = 0
@@ -187,7 +184,7 @@ def index():
 
             print("ZIP reading time:", time.time() - read_start)
 
-            queue.put(None)  # signal end
+            queue.put(None)
 
         with ProcessPoolExecutor(max_workers=max(2, os.cpu_count() - 3)) as executor:
 
@@ -237,7 +234,6 @@ def index():
                     print("Task submission time:", time.time() - submit_start)
 
                 else:
-                    # normal file
                     temp_path = os.path.join(UPLOAD_FOLDER, "temp_" + file.filename)
                     file.save(temp_path)
 
