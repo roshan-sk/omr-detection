@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 
 from omr_detection import process_omr
 from models import db, OMRSheet, AnswerKey
-from helpers import build_excel
+from helper import build_excel
 
 
 load_dotenv()
@@ -151,12 +151,18 @@ def index():
         files = request.files.getlist("files")
         results = {}
         all_sheets = []
-        batch_id = str(uuid.uuid4())
+        batch_id = session.get("latest_batch_id")
+
+        if not batch_id:
+            batch_id = str(uuid.uuid4())
+
         progress_store[batch_id] = {
             "total": 0,
             "processed": 0,
             "status": "Starting"
         }
+    
+        session["latest_batch_id"] = batch_id 
 
         queue = Queue(maxsize=50)
 
@@ -165,11 +171,16 @@ def index():
             read_start = time.time()
             print("ZIP File opened and read time",read_start)
 
-            for file_info in zip_ref.infolist():
-                if not file_info.filename.lower().endswith((".jpg", ".png", ".jpeg")):
-                    continue
-                progress_store[batch_id]["total"] += 1
-                progress_store[batch_id]["status"] = "Reading ZIP"
+            files_list = [
+                f for f in zip_ref.infolist()
+                if f.filename.lower().endswith((".jpg", ".png", ".jpeg"))
+            ]
+
+            # ✅ set correct total ONCE
+            progress_store[batch_id]["total"] = len(files_list)
+            
+            for idx, file_info in enumerate(files_list, start=1):
+                progress_store[batch_id]["status"] = f"Reading ZIP ({idx}/{len(files_list)})"
 
                 with zip_ref.open(file_info) as f:
                     file_bytes = f.read()
@@ -265,7 +276,7 @@ def index():
                 if i % 500 == 0:
                     print(f"[PROCESS DONE] {i}")
                 progress_store[batch_id]["processed"] = i + 1
-                progress_store[batch_id]["status"] = "Processing"
+                progress_store[batch_id]["status"] = f"Processing ({i+1}/{progress_store[batch_id]['total']})"
 
             print("Processing time:", time.time() - process_start)
 
@@ -287,8 +298,50 @@ def index():
         "index.html",
         results=results,
         total_questions=total_questions,
-        existing_keys=answer_key
+        existing_keys=answer_key,
+        batch_id=session.get("latest_batch_id")
     )
+
+
+@app.route("/api/progress/<batch_id>")
+def get_progress(batch_id):
+    data = progress_store.get(batch_id)
+
+    if not data:
+        return jsonify({
+            "total": 0,
+            "processed": 0,
+            "percent": 0,
+            "status": "Initializing"
+        })   # 👈 NEVER return 404
+
+    total = data.get("total", 0)
+    processed = data.get("processed", 0)
+
+    percent = int((processed / total) * 100) if total else 0
+
+    return jsonify({
+        "total": total,
+        "processed": processed,
+        "percent": percent,
+        "status": data.get("status", "Starting")
+    })
+    
+
+
+@app.route("/api/start", methods=["POST"])
+def start_upload():
+    batch_id = str(uuid.uuid4())
+
+    progress_store[batch_id] = {
+        "total": 0,
+        "processed": 0,
+        "status": "Starting"
+    }
+
+    session["latest_batch_id"] = batch_id
+
+    return jsonify({"batch_id": batch_id})
 
 
 @app.route("/save_answer_key", methods=["POST"])

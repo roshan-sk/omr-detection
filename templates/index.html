@@ -228,6 +228,20 @@
             </form>
         </div>
 
+        <div id="progressBox" style="display:none;margin:20px 0;">
+            <div style="background:#1e293b;border-radius:10px;overflow:hidden;">
+                <div id="progressBar" style="height:20px;width:0%;
+           background:#22c55e;
+           text-align:center;
+           color:black;
+           font-weight:bold;
+           transition: width 0.8s ease-in-out;">
+                    0%
+                </div>
+            </div>
+            <p id="progressText" style="margin-top:5px;">Starting...</p>
+        </div>
+
         {% if results %}
         <div class="card">
 
@@ -343,23 +357,29 @@
     </script>
 
     <script>
-        const jsonElement = document.getElementById("results-json");
+        function initializeResults() {
+            const jsonElement = document.getElementById("results-json");
 
-        let resultsData = {};
+            if (!jsonElement) return;
 
-        try {
-            resultsData = JSON.parse(jsonElement.textContent);
-        } catch (e) {
-            console.error("JSON parse error", e);
+            try {
+                window.resultsData = JSON.parse(jsonElement.textContent);
+                console.log("Results loaded:", window.resultsData);
+            } catch (e) {
+                console.error("JSON parse error", e);
+                window.resultsData = {};
+            }
         }
 
-        window.resultsData = resultsData;
+        // run after page load
+        initializeResults();
 
         function viewAnswers(file) {
-            const data = window.resultsData[file];
+            const data = window.resultsData?.[file];
 
             if (!data) {
                 alert("No data found");
+                console.error("Missing data for:", file);
                 return;
             }
 
@@ -373,7 +393,6 @@
             let html = "";
 
             (data.answers || []).forEach((ans, i) => {
-
                 let color = "#fff";
 
                 if (ans.value === "Empty") color = "#facc15";
@@ -381,8 +400,8 @@
                 else if (ans.is_correct) color = "#22c55e";
 
                 html += `<div class="answer-box" style="color:${color}">
-                    Q${String(i + 1).padStart(3, '0')} : ${ans.value}
-                </div>`;
+            Q${String(i + 1).padStart(3, '0')} : ${ans.value}
+        </div>`;
             });
 
             document.getElementById("answerGrid").innerHTML = html;
@@ -410,17 +429,134 @@
 
             btn.classList.add("active");
         }
-        document.querySelector("form").addEventListener("submit", function () {
+    </script>
+
+
+    <script>
+        document.querySelector("form").addEventListener("submit", async function (e) {
+            e.preventDefault();
+
             const btn = document.getElementById("submitBtn");
-
             btn.disabled = true;
-
             btn.innerText = "Processing...";
-
             btn.style.opacity = "0.6";
-            btn.style.cursor = "not-allowed";
-        });
 
+            const formData = new FormData(this);
+
+            // create batch
+            const startRes = await fetch("/api/start", { method: "POST" });
+            const startData = await startRes.json();
+            batchId = startData.batch_id;
+
+            // start progress
+            startProgressTracking();
+
+            startLiveResults();
+
+            try {
+                const res = await fetch("/", {
+                    method: "POST",
+                    body: formData
+                });
+
+                const html = await res.text();
+
+                // ✅ SHOW RESULT HERE (FINAL FIX)
+                document.open();
+                document.write(html);
+                document.close();
+
+            } catch (err) {
+                console.error("Upload error", err);
+            }
+        });
+    </script>
+
+    <script>
+        let batchId = null;
+        let interval = null;
+
+        // 🔵 PROGRESS TRACKING
+        function startProgressTracking() {
+            if (!batchId) return;
+
+            const box = document.getElementById("progressBox");
+            const bar = document.getElementById("progressBar");
+            const text = document.getElementById("progressText");
+
+            box.style.display = "block";
+
+            interval = setInterval(async () => {
+                try {
+                    const res = await fetch(`/api/progress/${batchId}`);
+                    const data = await res.json();
+
+                    console.log("Progress:", data);
+
+                    if (!data) return;
+
+                    bar.style.width = data.percent + "%";
+                    bar.innerText = data.percent + "%";
+
+                    text.innerText = data.status;
+
+                    // ✅ STOP when completed
+                    if (data.status === "Completed") {
+                        clearInterval(interval);
+                        text.innerText = "Completed ✅";
+                    }
+
+                } catch (e) {
+                    console.error("Progress error", e);
+                    clearInterval(interval);
+                }
+            }, 1000);
+        }
+    </script>
+
+    <script>
+        let shownRows = new Set();
+        let liveInterval = null;
+
+        function startLiveResults() {
+            if (!batchId) return;
+
+            const tbody = document.getElementById("resultsBody");
+
+            liveInterval = setInterval(async () => {
+                try {
+                    const res = await fetch(`/api/live_results/${batchId}`);
+                    const data = await res.json();
+
+                    Object.entries(data).forEach(([key, d]) => {
+
+                        if (shownRows.has(key)) return;
+                        shownRows.add(key);
+
+                        const row = `
+                    <tr>
+                        <td class="sticky-left">${d.name}</td>
+                        <td class="sticky-left-2">${d.roll_number}</td>
+                        <td class="sticky-left-3">${d.class}</td>
+                        <td class="sticky-left-4">${d.percentage || 0}</td>
+                        <td>${d.section}</td>
+                        <td>${d.stream}</td>
+                        <td>
+                            <button class="btn" onclick="viewAnswers('${key}')">
+                                View
+                            </button>
+                        </td>
+                    </tr>
+                `;
+
+                        tbody.insertAdjacentHTML("beforeend", row);
+                    });
+
+                } catch (e) {
+                    console.error("Live results error", e);
+                }
+            }, 1000);
+        }
     </script>
 
 </body>
