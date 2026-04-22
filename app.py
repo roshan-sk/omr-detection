@@ -146,7 +146,7 @@ def index():
 
     if request.method == "POST":
         total_start = time.time()
-        print("1st time====", total_start)
+        print("Upload API start time", total_start)
 
         files = request.files.getlist("files")
         results = {}
@@ -163,7 +163,7 @@ def index():
         def zip_reader(zip_ref, queue):
             count = 0
             read_start = time.time()
-            print("2nd time read time=======",read_start)
+            print("ZIP File opened and read time",read_start)
 
             for file_info in zip_ref.infolist():
                 if not file_info.filename.lower().endswith((".jpg", ".png", ".jpeg")):
@@ -177,12 +177,12 @@ def index():
                 queue.put((file_bytes, file_info.filename))
 
                 if count % 500 == 0:
-                    print("3rd time========", time.time()-read_start)
                     print(f"[QUEUE LOAD] {count}")
+                    print("Queue load takes time", time.time()-read_start)
 
                 count += 1
 
-            print("ZIP reading time:", time.time() - read_start)
+            print("Overall ZIP file reading time:", time.time() - read_start)
 
             queue.put(None)
 
