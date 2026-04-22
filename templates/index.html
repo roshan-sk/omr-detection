@@ -514,50 +514,7 @@
         }
     </script>
 
-    <script>
-        let shownRows = new Set();
-        let liveInterval = null;
-
-        function startLiveResults() {
-            if (!batchId) return;
-
-            const tbody = document.getElementById("resultsBody");
-
-            liveInterval = setInterval(async () => {
-                try {
-                    const res = await fetch(`/api/live_results/${batchId}`);
-                    const data = await res.json();
-
-                    Object.entries(data).forEach(([key, d]) => {
-
-                        if (shownRows.has(key)) return;
-                        shownRows.add(key);
-
-                        const row = `
-                    <tr>
-                        <td class="sticky-left">${d.name}</td>
-                        <td class="sticky-left-2">${d.roll_number}</td>
-                        <td class="sticky-left-3">${d.class}</td>
-                        <td class="sticky-left-4">${d.percentage || 0}</td>
-                        <td>${d.section}</td>
-                        <td>${d.stream}</td>
-                        <td>
-                            <button class="btn" onclick="viewAnswers('${key}')">
-                                View
-                            </button>
-                        </td>
-                    </tr>
-                `;
-
-                        tbody.insertAdjacentHTML("beforeend", row);
-                    });
-
-                } catch (e) {
-                    console.error("Live results error", e);
-                }
-            }, 1000);
-        }
-    </script>
+    
 
 </body>
 
